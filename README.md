@@ -135,6 +135,26 @@ DEFAULT_DST_HOME="$HOME"
 # KEY_EXTENSIONS, JUNK_PATTERNS — see MIGRATION_PLAN.md for what each does.
 ```
 
+## Before you run with `execute`: grant Terminal Full Disk Access
+
+macOS's privacy framework (TCC) blocks reads and writes to certain protected folders — most notably `~/Library/Containers/` and signed/sandboxed `.app` bundles on external volumes — unless the calling process has explicit "Full Disk Access" permission.
+
+If you skip this step, the `dry-run` will look fine but the `execute` will silently fail to move every sandboxed / App Store app and every `~/Library/Containers/<bundle-id>/` folder. You'll see entries like:
+
+```
+✗ mv failed: /Volumes/Old Data/Applications/Adblock Plus.app -> /Applications/Adblock Plus.app
+  reason: mv: rename /Volumes/Old Data/Applications/Adblock Plus.app to /Applications/Adblock Plus.app: Operation not permitted
+```
+
+To avoid this:
+
+1. Open **System Settings** → **Privacy & Security** → **Full Disk Access**.
+2. Click the **`+`** button and add **Terminal.app** (in `/System/Applications/Utilities/`). If you use iTerm2, Warp, Ghostty, etc., add that instead — whichever terminal you'll run the script from.
+3. **Fully quit your terminal** (Cmd-Q, not just close the window) and reopen.
+4. Now run the script.
+
+The script's no-clobber check means if you'd already run a partial execute, you can re-run safely: items that successfully moved will be detected as "destination already exists" and skipped.
+
 ## Safety properties
 
 - **Dry-run by default.** The script defaults to printing what it *would* do. You have to explicitly type `execute` to perform real moves, and that prompt has a second confirmation.

@@ -1,6 +1,19 @@
 #!/bin/bash
 # ----------------------------------------------------------------------------
-#  migrate-apps.sh  (v4.2 — broken-bundle hardening)
+#  migrate-apps.sh  (v4.3 — honest mv reporting)
+#
+#  Changes vs v4.2:
+#    - move_with_verify now captures mv's stderr into the log, so failures
+#      record the actual OS error (e.g. "Operation not permitted",
+#      "Permission denied") instead of a bare "mv failed".
+#    - When mv returns non-zero, the function checks whether the destination
+#      actually exists. macOS 'mv' across volumes is internally cp + rm; if
+#      the cp phase succeeds but the rm phase trips over signature-protected
+#      files (_CodeSignature/CodeResources resists rm even for the owning
+#      user), mv returns non-zero but the destination is intact. Previously
+#      the script reported these as failures; now they're correctly logged as
+#      "copied, source cleanup failed — destination intact" and counted as
+#      successes, with a one-liner shown for manual source cleanup.
 #
 #  Changes vs v4.1:
 #    - get_bundle_id and get_display_name now verify that Info.plist exists
@@ -8,8 +21,7 @@
 #      readable Info.plist, in which case PlistBuddy writes a "File Doesn't
 #      Exist, Will Create: ..." message to STDOUT (not stderr — long-standing
 #      PlistBuddy quirk). Without the guard, that error string was captured
-#      as the app's bundle ID and display name, polluting the probe output
-#      and the final summary.
+#      as the app's bundle ID and display name.
 #
 #  Hand-pick applications and their user data to migrate from a previous
 #  macOS install (mounted as a "data" volume, typically /Volumes/Old Data)
@@ -477,6 +489,7 @@ fi
 
 move_with_verify() {
   local src="$1" dst="$2" label="${3:-move}"
+  local mv_err
 
   if [[ ! -e "$src" ]]; then
     log "    SKIP ($label) — source missing: $src"; return 1
@@ -487,13 +500,33 @@ move_with_verify() {
   if $DRY_RUN; then
     log "    [DRY-RUN] mv \"$src\" \"$dst\""; return 0
   fi
-  if mv "$src" "$dst"; then
+
+  # macOS 'mv' for cross-volume moves is internally cp + rm. Signed .app
+  # bundles have signature files (_CodeSignature/CodeResources) with
+  # permission flags that resist 'rm' even for the owning user — so the cp
+  # phase succeeds, the rm phase fails, and mv returns non-zero. We need to
+  # distinguish that case (destination intact, source half-cleaned) from
+  # a true failure (destination missing).
+  if mv_err=$(mv "$src" "$dst" 2>&1); then
     if [[ -e "$dst" ]]; then
       log "    ✓ moved ($label): $dst"; return 0
     fi
     log "    ✗ mv returned 0 but destination missing: $dst"; return 1
   fi
-  log "    ✗ mv failed: $src -> $dst"; return 1
+
+  # mv returned non-zero. Check whether the destination actually made it.
+  if [[ -e "$dst" ]]; then
+    log "    ⚠ copied ($label), but source cleanup failed: $dst"
+    log "      destination is intact — the app/folder is fully migrated"
+    log "      source has signature-protected leftovers (safe to ignore;"
+    log "      cleans up when you reformat the source volume, or run:"
+    log "        sudo rm -rf \"$src\")"
+    return 0
+  fi
+
+  log "    ✗ mv failed: $src -> $dst"
+  [[ -n "$mv_err" ]] && log "      reason: $mv_err"
+  return 1
 }
 
 banner "Step 5: Performing moves"

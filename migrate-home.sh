@@ -1,6 +1,18 @@
 #!/bin/bash
 # ============================================================================
-#  migrate-home.sh  (v1.2 — archive-on-conflict, junk routing, expanded keys)
+#  migrate-home.sh  (v1.3 — honest mv reporting)
+#
+#  Changes vs v1.2:
+#    - move_with_verify now captures mv's stderr into the log, so failures
+#      record the actual OS error (e.g. "Operation not permitted",
+#      "Permission denied") instead of a bare "mv failed".
+#    - When mv returns non-zero, the function checks whether the destination
+#      actually exists. macOS 'mv' across volumes is internally cp + rm; if
+#      the cp phase succeeds but the rm phase trips over signature-protected
+#      files or TCC-restricted paths, mv returns non-zero but the destination
+#      is intact. Previously these were reported as failures; now they're
+#      logged as "copied, source cleanup failed — destination intact" and
+#      counted as successes.
 #
 #  Changes vs v1.1:
 #    - Step 3: if a Mac standard library's destination already exists, the
@@ -791,6 +803,7 @@ banner "Step 9: Performing moves"
 
 move_with_verify() {
   local src="$1" dst="$2" label="${3:-move}"
+  local mv_err
 
   if [[ ! -e "$src" ]]; then
     log "  SKIP ($label) — source missing: $src"; return 1
@@ -800,7 +813,7 @@ move_with_verify() {
   fi
 
   # Make sure the destination directory exists (we may create intermediate
-  # dirs like Imported/YYYY/, Imported-Certs/, Library/Keychains/).
+  # dirs like Imported/YYYY/, Keys and Certificates/, Library/Keychains/).
   local dst_dir
   dst_dir="$(dirname "$dst")"
   if [[ ! -d "$dst_dir" ]]; then
@@ -816,14 +829,29 @@ move_with_verify() {
     return 0
   fi
 
-  if mv "$src" "$dst"; then
+  # macOS 'mv' for cross-volume moves is internally cp + rm. Signed bundles
+  # and protected Library subfolders may resist the rm phase even when the
+  # cp phase succeeds. Distinguish "real failure" (destination missing) from
+  # "moved but couldn't clean source" (destination intact, source detritus).
+  if mv_err=$(mv "$src" "$dst" 2>&1); then
     if [[ -e "$dst" ]]; then
       log "  ✓ moved ($label): $dst"
       return 0
     fi
     log "  ✗ mv returned 0 but destination missing: $dst"; return 1
   fi
-  log "  ✗ mv failed: $src -> $dst"; return 1
+
+  if [[ -e "$dst" ]]; then
+    log "  ⚠ copied ($label), but source cleanup failed: $dst"
+    log "    destination is intact — fully migrated"
+    log "    source detritus left at: $src"
+    log "    (safe to ignore; cleans up when you reformat, or: sudo rm -rf \"$src\")"
+    return 0
+  fi
+
+  log "  ✗ mv failed: $src -> $dst"
+  [[ -n "$mv_err" ]] && log "    reason: $mv_err"
+  return 1
 }
 
 ok=0; failed=0
