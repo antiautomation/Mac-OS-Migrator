@@ -71,6 +71,27 @@ xattr -dr com.apple.quarantine "/path/to/Mac OS Migrator"
 
 If `chmod +x` got lost in transit, the .command files include a self-heal that re-chmods the .sh scripts on each run, so you only need to make the .command executable once.
 
+### Finder tagging (optional)
+
+At the mode prompt, both scripts ask whether to apply a Finder tag (default `Migrated`, blank to skip) to every item they move. Once the migration finishes, you can find everything that came across by searching `tag:Migrated` in Finder, or by clicking the tag in the Finder sidebar. Useful for reviewing your migration over the following weeks and deciding what to keep vs delete.
+
+**What gets tagged:**
+
+- Every `.app` bundle moved to `/Applications/`.
+- Every `~/Library/Application Support/<name>/`, `Containers/<id>/`, `Group Containers/<id>/`, and `Preferences/<id>.plist` that landed at the destination.
+- Every Mac standard library moved or archived in Phase 2 (Photos Library, Music, Mail, Messages, FCP / iMovie / Logic libraries, etc.).
+- Every file consolidated under `~/Documents/Keys and Certificates/`.
+- Every loose file year-sorted into `<folder>/Imported/YYYY/` plus the `Imported/` and `YYYY/` directories themselves (`migrate-home.sh` walks up the destination path and tags each intermediate directory it created, so spotlight surfaces the whole tree — not just the leaves).
+- Every "other folder" (e.g. `~/GitHub`, `~/Projects`) and every dotfile / dotdir you approved.
+
+**What doesn't get tagged:**
+
+- Pre-existing directories the script didn't create. If `~/Documents/` already existed, the script never touches its tag.
+- Anything in dry-run mode (no disk changes happen).
+- Items the script declined to move (e.g. destination-already-exists skips, source-missing skips).
+
+The tag is stored in the standard macOS `com.apple.metadata:_kMDItemUserTags` extended attribute, the same one Finder writes when you assign tags by hand. Default color is blue. Tag-write failures are non-fatal — the move already succeeded by the time tagging is attempted.
+
 ### Logs
 
 Every prompt, answer, and operation is logged to `~/migration-*.log` and `~/migration-home-*.log`. Useful for reviewing what happened, debugging skipped items, or filing issues.

@@ -1,6 +1,16 @@
 #!/bin/bash
 # ============================================================================
-#  migrate-home.sh  (v1.3 — honest mv reporting)
+#  migrate-home.sh  (v1.4 — Finder tagging, intermediate dirs included)
+#
+#  Changes vs v1.3:
+#    - Optional Finder tag applied to every migrated item, so you can find
+#      and review everything that came across in Finder afterward. Step 2
+#      now asks for a tag name (default "Migrated", blank disables).
+#      Implemented via xattr + plutil — no external dependencies.
+#    - Intermediate directories created by 'mkdir -p' (e.g. Documents/
+#      Imported/, Imported/YYYY/, Keys and Certificates/Downloads/) are
+#      also tagged so Spotlight 'tag:Migrated' surfaces the whole tree, not
+#      just the leaves. Pre-existing directories are left alone.
 #
 #  Changes vs v1.2:
 #    - move_with_verify now captures mv's stderr into the log, so failures
@@ -270,6 +280,19 @@ case "$date_choice" in
   created|CREATED|btime) date_mode="btime"; log "Date mode: created (btime)" ;;
   *)                     date_mode="mtime"; log "Date mode: modified (mtime)" ;;
 esac
+
+# ---- Optional Finder tagging ----
+echo ""
+echo "Optionally apply a Finder tag to every migrated item, so you can"
+echo "spotlight or filter for them later (e.g. tag:Migrated in Finder)."
+echo "Leave blank to skip tagging."
+TAG_NAME="$(ask 'Finder tag name' 'Migrated')"
+TAG_COLOR="4"   # 0=none 1=gray 2=green 3=purple 4=blue 5=yellow 6=red 7=orange
+if [[ -n "$TAG_NAME" ]]; then
+  log "Tag: items will be tagged \"$TAG_NAME\" (color $TAG_COLOR)."
+else
+  log "Tag: disabled."
+fi
 
 # Compute the archive destination for a library whose canonical destination
 # already exists. Routes by source's first path component:
@@ -801,6 +824,35 @@ fi
 
 banner "Step 9: Performing moves"
 
+# Apply a Finder tag to a path. macOS tags are stored as a binary plist in
+# the com.apple.metadata:_kMDItemUserTags xattr. The plist is an array of
+# strings, each formatted as "TagName\n<color>" with a literal newline.
+# Tag-write failures are non-fatal — the move already succeeded.
+apply_finder_tag() {
+  local path="$1"
+  [[ -z "$TAG_NAME" ]] && return 0
+  [[ ! -e "$path" ]] && return 0
+  $DRY_RUN && return 0
+
+  local tmp hex
+  tmp=$(mktemp -t migrator-tag.XXXXXX) || return 0
+  cat > "$tmp" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+<string>${TAG_NAME}
+${TAG_COLOR}</string>
+</array>
+</plist>
+EOF
+  plutil -convert binary1 "$tmp" 2>/dev/null
+  hex=$(xxd -p "$tmp" 2>/dev/null | tr -d '\n')
+  rm -f "$tmp"
+  [[ -z "$hex" ]] && return 0
+  xattr -wx com.apple.metadata:_kMDItemUserTags "$hex" "$path" 2>/dev/null || true
+}
+
 move_with_verify() {
   local src="$1" dst="$2" label="${3:-move}"
   local mv_err
@@ -814,13 +866,30 @@ move_with_verify() {
 
   # Make sure the destination directory exists (we may create intermediate
   # dirs like Imported/YYYY/, Keys and Certificates/, Library/Keychains/).
+  # When tagging is on, also tag every intermediate dir THIS script creates,
+  # so Finder spotlight surfaces the whole Imported tree under tag:Migrated
+  # — not just the leaves. Pre-existing dirs are left alone.
   local dst_dir
   dst_dir="$(dirname "$dst")"
+  local newly_created=()
   if [[ ! -d "$dst_dir" ]]; then
+    # Walk up from dst_dir, collecting each level that doesn't exist yet,
+    # stopping at DST_HOME or filesystem root.
+    local p="$dst_dir"
+    while [[ ! -d "$p" && "$p" != "$DST_HOME" && "$p" != "/" && "$p" != "." ]]; do
+      # Prepend so the list goes parent-to-child once we exit
+      newly_created=("$p" "${newly_created[@]:-}")
+      p="$(dirname "$p")"
+    done
+
     if $DRY_RUN; then
       log "  [DRY-RUN] mkdir -p \"$dst_dir\""
     else
       mkdir -p "$dst_dir" || { log "  ✗ mkdir failed: $dst_dir"; return 1; }
+      # Tag each intermediate dir we just brought into existence
+      for d in "${newly_created[@]:-}"; do
+        [[ -n "$d" ]] && apply_finder_tag "$d"
+      done
     fi
   fi
 
@@ -835,6 +904,7 @@ move_with_verify() {
   # "moved but couldn't clean source" (destination intact, source detritus).
   if mv_err=$(mv "$src" "$dst" 2>&1); then
     if [[ -e "$dst" ]]; then
+      apply_finder_tag "$dst"
       log "  ✓ moved ($label): $dst"
       return 0
     fi
@@ -842,6 +912,7 @@ move_with_verify() {
   fi
 
   if [[ -e "$dst" ]]; then
+    apply_finder_tag "$dst"
     log "  ⚠ copied ($label), but source cleanup failed: $dst"
     log "    destination is intact — fully migrated"
     log "    source detritus left at: $src"

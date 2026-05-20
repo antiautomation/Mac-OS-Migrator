@@ -1,6 +1,12 @@
 #!/bin/bash
 # ----------------------------------------------------------------------------
-#  migrate-apps.sh  (v4.3 — honest mv reporting)
+#  migrate-apps.sh  (v4.4 — Finder tagging)
+#
+#  Changes vs v4.3:
+#    - Optional Finder tag applied to every migrated item, so you can find
+#      and review everything that came across in Finder afterward. Step 2
+#      now asks for a tag name (default "Migrated", blank disables).
+#      Implemented via xattr + plutil — no external dependencies.
 #
 #  Changes vs v4.2:
 #    - move_with_verify now captures mv's stderr into the log, so failures
@@ -209,6 +215,19 @@ fi
 
 log ""
 log "Mode: $([[ $DRY_RUN == true ]] && echo 'DRY-RUN' || echo 'EXECUTE')"
+
+# ---- optional Finder tagging ----
+echo ""
+echo "Optionally apply a Finder tag to every migrated item, so you can"
+echo "spotlight or filter for them later (e.g. tag:Migrated in Finder)."
+echo "Leave blank to skip tagging."
+TAG_NAME="$(ask 'Finder tag name' 'Migrated')"
+TAG_COLOR="4"   # 0=none 1=gray 2=green 3=purple 4=blue 5=yellow 6=red 7=orange
+if [[ -n "$TAG_NAME" ]]; then
+  log "Tag: items will be tagged \"$TAG_NAME\" (color $TAG_COLOR)."
+else
+  log "Tag: disabled."
+fi
 
 # ---- step 3: build the app list --------------------------------------------
 
@@ -487,6 +506,35 @@ fi
 
 # ---- step 6: perform moves --------------------------------------------------
 
+# Apply a Finder tag to a path. macOS tags are stored as a binary plist in
+# the com.apple.metadata:_kMDItemUserTags xattr. The plist is an array of
+# strings, each formatted as "TagName\n<color>" with a literal newline.
+# Tag-write failures are non-fatal — the move already succeeded.
+apply_finder_tag() {
+  local path="$1"
+  [[ -z "$TAG_NAME" ]] && return 0
+  [[ ! -e "$path" ]] && return 0
+  $DRY_RUN && return 0
+
+  local tmp hex
+  tmp=$(mktemp -t migrator-tag.XXXXXX) || return 0
+  cat > "$tmp" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+<string>${TAG_NAME}
+${TAG_COLOR}</string>
+</array>
+</plist>
+EOF
+  plutil -convert binary1 "$tmp" 2>/dev/null
+  hex=$(xxd -p "$tmp" 2>/dev/null | tr -d '\n')
+  rm -f "$tmp"
+  [[ -z "$hex" ]] && return 0
+  xattr -wx com.apple.metadata:_kMDItemUserTags "$hex" "$path" 2>/dev/null || true
+}
+
 move_with_verify() {
   local src="$1" dst="$2" label="${3:-move}"
   local mv_err
@@ -509,6 +557,7 @@ move_with_verify() {
   # a true failure (destination missing).
   if mv_err=$(mv "$src" "$dst" 2>&1); then
     if [[ -e "$dst" ]]; then
+      apply_finder_tag "$dst"
       log "    ✓ moved ($label): $dst"; return 0
     fi
     log "    ✗ mv returned 0 but destination missing: $dst"; return 1
@@ -516,6 +565,7 @@ move_with_verify() {
 
   # mv returned non-zero. Check whether the destination actually made it.
   if [[ -e "$dst" ]]; then
+    apply_finder_tag "$dst"
     log "    ⚠ copied ($label), but source cleanup failed: $dst"
     log "      destination is intact — the app/folder is fully migrated"
     log "      source has signature-protected leftovers (safe to ignore;"
