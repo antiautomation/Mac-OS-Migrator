@@ -198,6 +198,7 @@ The script's no-clobber check means if you'd already run a partial execute, you 
 mac-os-migrator/
 ├── README.md
 ├── MIGRATION_PLAN.md       # detailed walkthrough, design notes, per-app caveats, FAQ
+├── CHANGELOG.md            # version-by-version history of what changed and why
 ├── LICENSE                 # MIT
 ├── .gitignore
 ├── migrate-apps.sh         # Phase 1 — CLI entry point
@@ -207,6 +208,8 @@ mac-os-migrator/
 ```
 
 The `.command` wrappers are thin: they `cd` to their own directory, ensure the matching `.sh` is executable, run it, and keep the Terminal window open at exit. All the actual logic lives in the `.sh` files.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the per-version history of what each release changed and why.
 
 ## Contributing
 
